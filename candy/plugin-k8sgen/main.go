@@ -8,6 +8,7 @@ package k8sgen
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 
@@ -16,19 +17,23 @@ import (
 	"github.com/opencharly/spec/spec"
 )
 
+//go:embed schema/*.cue
+var schemaFS embed.FS
+
 const calver = "2026.181.0001"
 
 // NewProvider builds the k8sgen provider.
 func NewProvider() pb.ProviderServer { return &provider{} }
 
-// NewMeta advertises verb:k8sgen serving OpEmit (via sdk.NewMeta → BuildCapabilities). The verb is
-// invoked with the structured spec.KubernetesGenInput, not an authored plugin_input, so it declares no
-// #*Input — the shipped schema ships only the trivial #KubernetesGenInput so the host's plugin-schema gate
-// has a non-empty, base-spliceable schema.
+// NewMeta advertises verb:k8sgen serving OpEmit via sdk.NewMeta → BuildCapabilities, together
+// with the plugin's OWN self-contained CUE schema (schema/k8sgen.cue) served over Describe —
+// there is NO schema-less plugin. The verb is invoked with the structured
+// spec.KubernetesGenInput, not an authored plugin_input, so the schema DOCUMENTS the k8sgen
+// contract (no #*Input def).
 func NewMeta() pb.PluginMetaServer {
 	return sdk.NewMeta(calver,
 		[]sdk.ProvidedCapability{{Class: "verb", Word: "k8sgen"}},
-		nil)
+		schemaFS)
 }
 
 type provider struct {
