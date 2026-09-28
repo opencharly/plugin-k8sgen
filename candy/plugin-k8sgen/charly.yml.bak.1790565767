@@ -1,5 +1,7 @@
+version: 2026.232.0520
 plugin-k8sgen:
     candy:
+        version: 2026.181.0001
         description: |-
             KUSTOMIZE GENERATOR plugin (C8/M13) — the pure manifest generation that turns a
             deployment node + a kind:kubernetes cluster template + the image's ports/uid/gid into a
