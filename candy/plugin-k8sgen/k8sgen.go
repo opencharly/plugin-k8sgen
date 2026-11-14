@@ -52,15 +52,16 @@ import (
 // `kubectl apply -k` argument.
 //
 //nolint:gocyclo // Kustomize orchestrator: sequential phases with conditional file emissions; moderate complexity, extraction needs extensive output-path param passing
-func GenerateTree(in spec.KubernetesGenInput) (spec.KubernetesGenReply, error) {
+func GenerateTree(in genInput) (spec.KubernetesGenReply, error) {
 	var reply spec.KubernetesGenReply
 	if in.DeploymentName == "" {
 		return reply, fmt.Errorf("deployment name is required")
 	}
 	// NOTE: the Cluster-required guard lives in the in-core shim
-	// (GenerateKubernetesKustomize), where Cluster is still a *KubernetesSpec pointer that CAN be
-	// nil-checked. The wire type here is a value (spec.Kubernetes), so by the time
-	// GenerateTree runs the cluster is always present.
+	// (GenerateKubernetesKustomize), which still holds a pointer it can nil-check. Here the
+	// cluster arrives as this plugin's own value (genInput.cluster), decoded from the opaque
+	// `cluster_raw` body (Cutover K); opencharly/spec#304 unit 5 removed the contract's typed
+	// wire for it, so this plugin is the only reader of the authored shape.
 
 	overlayName := in.Instance
 	if overlayName == "" {
@@ -140,7 +141,7 @@ func GenerateTree(in spec.KubernetesGenInput) (spec.KubernetesGenReply, error) {
 			"includeSelectors": true,
 		}}
 	}
-	if annotations := in.Cluster.Defaults.Annotations; len(annotations) > 0 {
+	if annotations := in.cluster.Defaults.Annotations; len(annotations) > 0 {
 		baseKustomization["commonAnnotations"] = annotations
 	}
 	if err := addFile("base/kustomization.yaml", baseKustomization, "kustomization"); err != nil {
@@ -222,7 +223,7 @@ func GenerateTree(in spec.KubernetesGenInput) (spec.KubernetesGenReply, error) {
 // Workload kind selection — the heuristic from F.7.
 // -----------------------------------------------------------------------------
 
-func selectWorkloadKind(opts spec.KubernetesGenInput) string {
+func selectWorkloadKind(opts genInput) string {
 	// Explicit override wins.
 	if deployKnobs := opts.Deploy.Deploy; deployKnobs != nil && deployKnobs.Workload != "" {
 		return deployKnobs.Workload
@@ -253,7 +254,7 @@ func selectWorkloadKind(opts spec.KubernetesGenInput) string {
 // Workload (Deployment / StatefulSet / DaemonSet / Job / CronJob / Pod).
 // -----------------------------------------------------------------------------
 
-func generateWorkload(opts spec.KubernetesGenInput) (map[string]any, string) {
+func generateWorkload(opts genInput) (map[string]any, string) {
 	kind := selectWorkloadKind(opts)
 	podSpec := generatePodSpec(opts)
 
@@ -325,18 +326,18 @@ func generateWorkload(opts spec.KubernetesGenInput) (map[string]any, string) {
 	}
 }
 
-func effectiveReplicas(opts spec.KubernetesGenInput) int {
+func effectiveReplicas(opts genInput) int {
 	if opts.Deploy.Replica > 0 {
 		return opts.Deploy.Replica
 	}
 	return 1
 }
 
-func appSelector(opts spec.KubernetesGenInput) map[string]string {
+func appSelector(opts genInput) map[string]string {
 	return map[string]string{"app": opts.DeploymentName}
 }
 
-func baseManifest(apiVersion, kind string, opts spec.KubernetesGenInput, spec any) map[string]any {
+func baseManifest(apiVersion, kind string, opts genInput, spec any) map[string]any {
 	meta := map[string]any{
 		"name": opts.DeploymentName,
 	}
@@ -351,18 +352,18 @@ func baseManifest(apiVersion, kind string, opts spec.KubernetesGenInput, spec an
 	}
 }
 
-func mergedLabels(opts spec.KubernetesGenInput) map[string]string {
+func mergedLabels(opts genInput) map[string]string {
 	out := map[string]string{"app": opts.DeploymentName}
-	maps.Copy(out, opts.Cluster.Defaults.Labels)
+	maps.Copy(out, opts.cluster.Defaults.Labels)
 	return out
 }
 
-func deployNamespace(opts spec.KubernetesGenInput) string {
+func deployNamespace(opts genInput) string {
 	if deployKnobs := opts.Deploy.Deploy; deployKnobs != nil && deployKnobs.Namespace != "" {
 		return deployKnobs.Namespace
 	}
-	if opts.Cluster.DefaultNamespace != "" {
-		return opts.Cluster.DefaultNamespace
+	if opts.cluster.DefaultNamespace != "" {
+		return opts.cluster.DefaultNamespace
 	}
 	return ""
 }
@@ -371,15 +372,15 @@ func deployNamespace(opts spec.KubernetesGenInput) string {
 // Pod spec.
 // -----------------------------------------------------------------------------
 
-func generatePodSpec(opts spec.KubernetesGenInput) map[string]any {
+func generatePodSpec(opts genInput) map[string]any {
 	container := map[string]any{
 		"name":  opts.DeploymentName,
 		"image": opts.ImageRef,
 	}
 
 	// Image pull policy from cluster profile.
-	if opts.Cluster.ImageDefault.PullPolicy != "" {
-		container["imagePullPolicy"] = opts.Cluster.ImageDefault.PullPolicy
+	if opts.cluster.ImageDefault.PullPolicy != "" {
+		container["imagePullPolicy"] = opts.cluster.ImageDefault.PullPolicy
 	}
 
 	// Container ports from capabilities.Ports
@@ -427,9 +428,9 @@ func generatePodSpec(opts spec.KubernetesGenInput) map[string]any {
 	}
 
 	// Image pull secrets
-	if len(opts.Cluster.ImageDefault.PullSecrets) > 0 {
-		refs := make([]map[string]any, 0, len(opts.Cluster.ImageDefault.PullSecrets))
-		for _, s := range opts.Cluster.ImageDefault.PullSecrets {
+	if len(opts.cluster.ImageDefault.PullSecrets) > 0 {
+		refs := make([]map[string]any, 0, len(opts.cluster.ImageDefault.PullSecrets))
+		for _, s := range opts.cluster.ImageDefault.PullSecrets {
 			refs = append(refs, map[string]any{"name": s})
 		}
 		podSpec["imagePullSecrets"] = refs
@@ -441,13 +442,13 @@ func generatePodSpec(opts spec.KubernetesGenInput) map[string]any {
 	}
 
 	// Priority class / tolerations / node selector from cluster defaults.
-	if pc := opts.Cluster.PodDefault.PriorityClass; pc != "" {
+	if pc := opts.cluster.PodDefault.PriorityClass; pc != "" {
 		podSpec["priorityClassName"] = pc
 	}
-	if tol := opts.Cluster.PodDefault.Tolerations; len(tol) > 0 {
+	if tol := opts.cluster.PodDefault.Tolerations; len(tol) > 0 {
 		podSpec["tolerations"] = tol
 	}
-	if ns := opts.Cluster.PodDefault.NodeSelector; len(ns) > 0 {
+	if ns := opts.cluster.PodDefault.NodeSelector; len(ns) > 0 {
 		podSpec["nodeSelector"] = ns
 	}
 
@@ -472,7 +473,7 @@ func generatePodSpec(opts spec.KubernetesGenInput) map[string]any {
 	return podSpec
 }
 
-func podSecurityContext(opts spec.KubernetesGenInput) map[string]any {
+func podSecurityContext(opts genInput) map[string]any {
 	out := map[string]any{}
 	if opts.UID > 0 {
 		out["runAsUser"] = opts.UID
@@ -481,7 +482,7 @@ func podSecurityContext(opts spec.KubernetesGenInput) map[string]any {
 		out["runAsGroup"] = opts.GID
 		out["fsGroup"] = opts.GID
 	}
-	if opts.Cluster.AdmissionPolicy == "restricted" {
+	if opts.cluster.AdmissionPolicy == "restricted" {
 		out["runAsNonRoot"] = true
 		out["seccompProfile"] = map[string]any{"type": "RuntimeDefault"}
 	}
@@ -517,7 +518,7 @@ func generateContainerPorts(ports []string) []map[string]any {
 	return out
 }
 
-func generateService(opts spec.KubernetesGenInput, _ string) map[string]any {
+func generateService(opts genInput, _ string) map[string]any {
 	ports := generateContainerPorts(opts.Ports)
 	if len(ports) == 0 {
 		return nil
@@ -602,7 +603,7 @@ func generateResources(d spec.Deploy) map[string]any {
 // Storage / PVC / Volumes.
 // -----------------------------------------------------------------------------
 
-func storageClass(cluster spec.Kubernetes, hint string) string {
+func storageClass(cluster clusterSpec, hint string) string {
 	switch hint {
 	case "fast":
 		if cluster.Storage.ClassFast != "" {
@@ -620,7 +621,7 @@ func storageClass(cluster spec.Kubernetes, hint string) string {
 	return cluster.Storage.ClassDefault
 }
 
-func accessMode(cluster spec.Kubernetes, access string) string {
+func accessMode(cluster clusterSpec, access string) string {
 	switch access {
 	case "many-readers":
 		return "ReadOnlyMany"
@@ -635,11 +636,11 @@ func accessMode(cluster spec.Kubernetes, access string) string {
 	return "ReadWriteOnce"
 }
 
-func generatePVCs(opts spec.KubernetesGenInput) []map[string]any {
+func generatePVCs(opts genInput) []map[string]any {
 	out := make([]map[string]any, 0, len(opts.Deploy.Storage))
 	for _, s := range opts.Deploy.Storage {
 		spc := map[string]any{
-			"accessModes": []string{accessMode(opts.Cluster, s.Access)},
+			"accessModes": []string{accessMode(opts.cluster, s.Access)},
 		}
 		size := s.Size
 		if size == "" {
@@ -648,7 +649,7 @@ func generatePVCs(opts spec.KubernetesGenInput) []map[string]any {
 		spc["resources"] = map[string]any{
 			"requests": map[string]any{"storage": size},
 		}
-		if sc := storageClass(opts.Cluster, s.ClassHint); sc != "" {
+		if sc := storageClass(opts.cluster, s.ClassHint); sc != "" {
 			spc["storageClassName"] = sc
 		}
 		pvcOpts := opts
@@ -659,11 +660,11 @@ func generatePVCs(opts spec.KubernetesGenInput) []map[string]any {
 	return out
 }
 
-func generateVolumeClaimTemplates(opts spec.KubernetesGenInput) []map[string]any {
+func generateVolumeClaimTemplates(opts genInput) []map[string]any {
 	out := make([]map[string]any, 0, len(opts.Deploy.Storage))
 	for _, s := range opts.Deploy.Storage {
 		spc := map[string]any{
-			"accessModes": []string{accessMode(opts.Cluster, s.Access)},
+			"accessModes": []string{accessMode(opts.cluster, s.Access)},
 		}
 		size := s.Size
 		if size == "" {
@@ -672,7 +673,7 @@ func generateVolumeClaimTemplates(opts spec.KubernetesGenInput) []map[string]any
 		spc["resources"] = map[string]any{
 			"requests": map[string]any{"storage": size},
 		}
-		if sc := storageClass(opts.Cluster, s.ClassHint); sc != "" {
+		if sc := storageClass(opts.cluster, s.ClassHint); sc != "" {
 			spc["storageClassName"] = sc
 		}
 		out = append(out, map[string]any{
@@ -698,7 +699,7 @@ func generateVolumeMounts(d spec.Deploy) []map[string]any {
 	return out
 }
 
-func generatePodVolumes(opts spec.KubernetesGenInput) []map[string]any {
+func generatePodVolumes(opts genInput) []map[string]any {
 	kind := selectWorkloadKind(opts)
 	if kind == "StatefulSet" {
 		// StatefulSet uses volumeClaimTemplates — no need for pod-level volumes.
@@ -720,16 +721,16 @@ func generatePodVolumes(opts spec.KubernetesGenInput) []map[string]any {
 // Ingress.
 // -----------------------------------------------------------------------------
 
-func generateIngress(opts spec.KubernetesGenInput) map[string]any {
+func generateIngress(opts genInput) map[string]any {
 	expose := opts.Deploy.Expose
 	if expose == nil || expose.Host == "" {
 		return nil
 	}
-	if !opts.Cluster.Ingress.Enabled {
+	if !opts.cluster.Ingress.Enabled {
 		return nil // cluster profile opts out of ingress generation
 	}
 
-	pathType := opts.Cluster.Ingress.PathTypeDefault
+	pathType := opts.cluster.Ingress.PathTypeDefault
 	if pathType == "" {
 		pathType = "Prefix"
 	}
@@ -760,8 +761,8 @@ func generateIngress(opts spec.KubernetesGenInput) map[string]any {
 	spc := map[string]any{
 		"rules": []any{rule},
 	}
-	if opts.Cluster.Ingress.Class != "" {
-		spc["ingressClassName"] = opts.Cluster.Ingress.Class
+	if opts.cluster.Ingress.Class != "" {
+		spc["ingressClassName"] = opts.cluster.Ingress.Class
 	}
 	if expose.TLS {
 		spc["tls"] = []any{
@@ -778,9 +779,9 @@ func generateIngress(opts spec.KubernetesGenInput) map[string]any {
 	if labels := mergedLabels(opts); len(labels) > 0 {
 		meta["labels"] = labels
 	}
-	if expose.TLS && opts.Cluster.Ingress.CertIssuer != "" {
+	if expose.TLS && opts.cluster.Ingress.CertIssuer != "" {
 		meta["annotations"] = map[string]string{
-			"cert-manager.io/cluster-issuer": opts.Cluster.Ingress.CertIssuer,
+			"cert-manager.io/cluster-issuer": opts.cluster.Ingress.CertIssuer,
 		}
 	}
 	return map[string]any{
@@ -791,7 +792,7 @@ func generateIngress(opts spec.KubernetesGenInput) map[string]any {
 	}
 }
 
-func resolveIngressPort(opts spec.KubernetesGenInput, portNameOrNumber string) int {
+func resolveIngressPort(opts genInput, portNameOrNumber string) int {
 	// If the deployment names a port by number, parse it.
 	if n, err := strconv.Atoi(portNameOrNumber); err == nil && n > 0 {
 		return n

@@ -129,7 +129,7 @@ func TestCheckToProbe_HTTPPriority(t *testing.T) {
 // (Deployment spec.replicas, container image == ImageRef, podSecurityContext
 // runAsUser == UID). Proves the moved generator still produces correct manifests.
 func TestGenerateTree_Shape(t *testing.T) {
-	cluster := spec.Kubernetes{}
+	cluster := clusterSpec{}
 	cluster.Ingress.Enabled = true
 	in := spec.KubernetesGenInput{
 		DeploymentName: "web",
@@ -137,7 +137,6 @@ func TestGenerateTree_Shape(t *testing.T) {
 		Ports:          []string{"8080", "9090/udp"},
 		UID:            1000,
 		GID:            1000,
-		Cluster:        cluster,
 		Deploy: spec.Deploy{
 			Replica: 3,
 			Env:     map[string]string{"FOO": "bar"},
@@ -147,7 +146,7 @@ func TestGenerateTree_Shape(t *testing.T) {
 		},
 	}
 
-	reply, err := GenerateTree(in)
+	reply, err := GenerateTree(genInput{KubernetesGenInput: in, cluster: cluster})
 	if err != nil {
 		t.Fatalf("GenerateTree: %v", err)
 	}
@@ -220,7 +219,6 @@ func TestGenerateTree_HelmCharts(t *testing.T) {
 	in := spec.KubernetesGenInput{
 		DeploymentName: "web",
 		ImageRef:       "registry.example.com/web:v1",
-		Cluster:        spec.Kubernetes{},
 		Deploy: spec.Deploy{
 			Deploy: &spec.KubernetesDeploy{
 				Workload: "Deployment",
@@ -236,7 +234,7 @@ func TestGenerateTree_HelmCharts(t *testing.T) {
 		},
 	}
 
-	reply, err := GenerateTree(in)
+	reply, err := GenerateTree(genInput{KubernetesGenInput: in})
 	if err != nil {
 		t.Fatalf("GenerateTree: %v", err)
 	}
