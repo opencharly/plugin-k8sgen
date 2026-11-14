@@ -14,7 +14,6 @@ import (
 
 	"github.com/opencharly/sdk"
 	pb "github.com/opencharly/spec/proto"
-	"github.com/opencharly/spec/spec"
 )
 
 //go:embed schema/*.cue
@@ -46,14 +45,15 @@ func (p *provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeR
 	if req.GetOp() != sdk.OpEmit {
 		return nil, fmt.Errorf("k8sgen: unsupported op %q (only %q)", req.GetOp(), sdk.OpEmit)
 	}
-	var in spec.KubernetesGenInput
+	var in genInput
 	if err := json.Unmarshal(req.GetParamsJson(), &in); err != nil {
 		return nil, fmt.Errorf("k8sgen: decode input: %w", err)
 	}
 	// The k8s substrate-value de-type (Cutover K): the kernel ships the cluster body
-	// OPAQUELY in ClusterRaw; the plugin owns the spec.Kubernetes decode.
+	// OPAQUELY in ClusterRaw; the plugin owns the decode, into its OWN view (clusterspec.go)
+	// since opencharly/spec#304 unit 5 moved the authored shape out of the contract.
 	if len(in.ClusterRaw) > 0 {
-		if err := json.Unmarshal(in.ClusterRaw, &in.Cluster); err != nil {
+		if err := json.Unmarshal(in.ClusterRaw, &in.cluster); err != nil {
 			return nil, fmt.Errorf("k8sgen: decode cluster: %w", err)
 		}
 	}
